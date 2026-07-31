@@ -173,12 +173,20 @@ const metricsStyleColumn = css({
   gap: "10px",
 });
 
-export const initialState = {
-  workspace: "...",
+let cachedState;
+if (typeof window !== "undefined") {
+  try {
+    const raw = window.localStorage.getItem("sidebarState");
+    if (raw) cachedState = JSON.parse(raw);
+  } catch (e) {}
+}
+
+export const initialState = cachedState || {
+  workspace: "-",
   monitors: [],
-  wifiSpeed: "...",
+  wifiSpeed: "-",
   audioType: "speaker",
-  battery: "...",
+  battery: "?",
   isCharging: false,
   tick: 0
 };
@@ -193,7 +201,7 @@ export const updateState = (event, previousState) => {
   }
 
   if (event.type === "UPDATE_STATS") {
-    return {
+    const newState = {
       ...previousState,
       workspace: event.data.workspace,
       monitors: event.data.monitors,
@@ -203,6 +211,12 @@ export const updateState = (event, previousState) => {
       isCharging: event.data.isCharging,
       warning: false
     };
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem("sidebarState", JSON.stringify(newState));
+      } catch (e) {}
+    }
+    return newState;
   }
   return previousState;
 };
