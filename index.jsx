@@ -23,89 +23,92 @@ if (typeof window !== "undefined" && !window.statBarIconCache) {
   });
 }
 
+const handleOutput = (output, dispatch) => {
+  try {
+    const parts = output.split('---');
+    
+    const workspace = parts[0]?.trim() || "N/A";
+    
+    const windowsRaw = parts[1]?.trim() || "";
+    const appsByMonitor = {};
+    
+    if (windowsRaw) {
+      windowsRaw.split('\n').forEach(line => {
+        const cols = line.split('|');
+        if (cols.length > 2) {
+          const mon = cols[0].trim();
+          const ws = cols[1].trim();
+          const app = cols[2].trim();
+          if (app && app !== "Finder") {
+            if (!appsByMonitor[mon]) appsByMonitor[mon] = {};
+            if (!appsByMonitor[mon][app]) appsByMonitor[mon][app] = new Set();
+            appsByMonitor[mon][app].add(ws);
+          }
+        }
+      });
+    }
+    
+    const parsedMonitors = Object.keys(appsByMonitor).map(mon => ({
+      name: mon,
+      apps: Object.keys(appsByMonitor[mon]).map(appName => ({
+        name: appName,
+        workspaces: Array.from(appsByMonitor[mon][appName]).sort()
+      }))
+    }));
+
+    // Preload missing icons in the background without blocking widget updates
+    parsedMonitors.forEach(mon => {
+      mon.apps.forEach(appObj => {
+        const appName = appObj.name;
+        if (window.statBarIconCache && !window.statBarIconCache.has(appName) && !window.statBarPendingIcons.has(appName)) {
+          window.statBarPendingIcons.add(appName);
+          const safeName = appName.replace(/"/g, '\\"');
+          run(`SideBar.widget/generate_icon.sh "${safeName}"`).then(() => {
+            window.statBarIconCache.add(appName);
+            window.statBarPendingIcons.delete(appName);
+            dispatch({ type: "ICON_LOADED" });
+          });
+        }
+      });
+    });
+    
+    const wifiRaw = parts[2] || "";
+    const wifiPowerRaw = parts[5] || "";
+    let wifiSpeed = "Off";
+    if (wifiPowerRaw.includes("On")) {
+      wifiSpeed = wifiRaw.includes("status: active") ? "Con" : "On";
+    }
+    
+    const audioRaw = (parts[3] || "").trim().toLowerCase();
+    let audioType = 'speaker';
+    if (/headphones|external/.test(audioRaw)) {
+      audioType = 'headphones';
+    } else if (/airpods|bluetooth|bose|sony|beats|buds|ear|pod/.test(audioRaw)) {
+      audioType = 'bluetooth';
+    }
+
+    const batteryRaw = parts[4] || "";
+    const battMatch = batteryRaw.match(/(\d+)%/);
+    const battery = battMatch ? battMatch[1] : "?";
+    const isCharging = /AC Power|charging;/.test(batteryRaw);
+
+    dispatch({ 
+      type: "UPDATE_STATS", 
+      data: { workspace, monitors: parsedMonitors, wifiSpeed, audioType, battery, isCharging } 
+    });
+  } catch (e) {
+    dispatch({ type: "ERROR", error: e.toString() });
+  }
+};
+
 export const command = dispatch => {
   if (window.statBarClock) clearInterval(window.statBarClock);
   window.statBarClock = setInterval(() => {
     dispatch({ type: "TICK" });
-  }, 10000);
+    run(CMD).then(output => handleOutput(output, dispatch));
+  }, 2000);
 
-  run(CMD).then(output => {
-    try {
-      const parts = output.split('---');
-      
-      const workspace = parts[0]?.trim() || "N/A";
-      
-      const windowsRaw = parts[1]?.trim() || "";
-      const appsByMonitor = {};
-      
-      if (windowsRaw) {
-        windowsRaw.split('\n').forEach(line => {
-          const cols = line.split('|');
-          if (cols.length > 2) {
-            const mon = cols[0].trim();
-            const ws = cols[1].trim();
-            const app = cols[2].trim();
-            if (app && app !== "Finder") {
-              if (!appsByMonitor[mon]) appsByMonitor[mon] = {};
-              if (!appsByMonitor[mon][app]) appsByMonitor[mon][app] = new Set();
-              appsByMonitor[mon][app].add(ws);
-            }
-          }
-        });
-      }
-      
-      const parsedMonitors = Object.keys(appsByMonitor).map(mon => ({
-        name: mon,
-        apps: Object.keys(appsByMonitor[mon]).map(appName => ({
-          name: appName,
-          workspaces: Array.from(appsByMonitor[mon][appName]).sort()
-        }))
-      }));
-
-      // Preload missing icons in the background without blocking widget updates
-      parsedMonitors.forEach(mon => {
-        mon.apps.forEach(appObj => {
-          const appName = appObj.name;
-          if (window.statBarIconCache && !window.statBarIconCache.has(appName) && !window.statBarPendingIcons.has(appName)) {
-            window.statBarPendingIcons.add(appName);
-            const safeName = appName.replace(/"/g, '\\"');
-            run(`SideBar.widget/generate_icon.sh "${safeName}"`).then(() => {
-              window.statBarIconCache.add(appName);
-              window.statBarPendingIcons.delete(appName);
-              dispatch({ type: "ICON_LOADED" });
-            });
-          }
-        });
-      });
-      
-      const wifiRaw = parts[2] || "";
-      const wifiPowerRaw = parts[5] || "";
-      let wifiSpeed = "Off";
-      if (wifiPowerRaw.includes("On")) {
-        wifiSpeed = wifiRaw.includes("status: active") ? "Con" : "On";
-      }
-      
-      const audioRaw = (parts[3] || "").trim().toLowerCase();
-      let audioType = 'speaker';
-      if (/headphones|external/.test(audioRaw)) {
-        audioType = 'headphones';
-      } else if (/airpods|bluetooth|bose|sony|beats|buds|ear|pod/.test(audioRaw)) {
-        audioType = 'bluetooth';
-      }
-
-      const batteryRaw = parts[4] || "";
-      const battMatch = batteryRaw.match(/(\d+)%/);
-      const battery = battMatch ? battMatch[1] : "?";
-      const isCharging = /AC Power|charging;/.test(batteryRaw);
-
-      dispatch({ 
-        type: "UPDATE_STATS", 
-        data: { workspace, monitors: parsedMonitors, wifiSpeed, audioType, battery, isCharging } 
-      });
-    } catch (e) {
-      dispatch({ type: "ERROR", error: e.toString() });
-    }
-  });
+  run(CMD).then(output => handleOutput(output, dispatch));
 };
 
 export const className = {
