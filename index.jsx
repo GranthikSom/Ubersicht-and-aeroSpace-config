@@ -12,8 +12,9 @@ const options = {
   width: screenWidth / 2 - barWidth / 2 + "px",
 };
 
-// Combine all 4 necessary data fetches into a single string to spawn exactly ONE shell process.
-const CMD = `/opt/homebrew/bin/aerospace list-workspaces --focused 2>/dev/null; echo "---"; /opt/homebrew/bin/aerospace list-windows --all --format "%{monitor-name}|%{workspace}|%{app-name}" 2>/dev/null; echo "---"; ifconfig en0 2>/dev/null; echo "---"; SideBar.widget/audio_device 2>/dev/null; echo "---"; pmset -g batt; echo "---"; networksetup -getairportpower en0 2>/dev/null`;
+const FAST_CMD = `/opt/homebrew/bin/aerospace list-workspaces --focused 2>/dev/null; echo "---"; /opt/homebrew/bin/aerospace list-windows --all --format "%{monitor-name}|%{workspace}|%{app-name}" 2>/dev/null`;
+const SLOW_CMD = `ifconfig en0 2>/dev/null; echo "---"; SideBar.widget/audio_device 2>/dev/null; echo "---"; pmset -g batt; echo "---"; networksetup -getairportpower en0 2>/dev/null`;
+
 // In-memory icon cache to completely eliminate DOM image loading delays and onError thrashing
 if (typeof window !== "undefined" && !window.statBarIconCache) {
   window.statBarIconCache = new Set();
@@ -23,12 +24,10 @@ if (typeof window !== "undefined" && !window.statBarIconCache) {
   });
 }
 
-const handleOutput = (output, dispatch) => {
+const handleFastOutput = (output, dispatch) => {
   try {
     const parts = output.split('---');
-    
     const workspace = parts[0]?.trim() || "N/A";
-    
     const windowsRaw = parts[1]?.trim() || "";
     const appsByMonitor = {};
     
@@ -56,7 +55,6 @@ const handleOutput = (output, dispatch) => {
       }))
     }));
 
-    // Preload missing icons in the background without blocking widget updates
     parsedMonitors.forEach(mon => {
       mon.apps.forEach(appObj => {
         const appName = appObj.name;
@@ -71,15 +69,27 @@ const handleOutput = (output, dispatch) => {
         }
       });
     });
+
+    dispatch({ type: "UPDATE_FAST_STATS", data: { workspace, monitors: parsedMonitors } });
+  } catch (e) {
+    dispatch({ type: "ERROR", error: e.toString() });
+  }
+};
+
+const handleSlowOutput = (output, dispatch) => {
+  try {
+    const parts = output.split('---');
     
-    const wifiRaw = parts[2] || "";
-    const wifiPowerRaw = parts[5] || "";
+    const wifiRaw = parts[0] || "";
+    const audioRaw = (parts[1] || "").trim().toLowerCase();
+    const batteryRaw = parts[2] || "";
+    const wifiPowerRaw = parts[3] || "";
+    
     let wifiSpeed = "Off";
     if (wifiPowerRaw.includes("On")) {
       wifiSpeed = wifiRaw.includes("status: active") ? "Con" : "On";
     }
     
-    const audioRaw = (parts[3] || "").trim().toLowerCase();
     let audioType = 'speaker';
     if (/headphones|external/.test(audioRaw)) {
       audioType = 'headphones';
@@ -87,28 +97,33 @@ const handleOutput = (output, dispatch) => {
       audioType = 'bluetooth';
     }
 
-    const batteryRaw = parts[4] || "";
     const battMatch = batteryRaw.match(/(\d+)%/);
     const battery = battMatch ? battMatch[1] : "?";
     const isCharging = /AC Power|charging;/.test(batteryRaw);
 
-    dispatch({ 
-      type: "UPDATE_STATS", 
-      data: { workspace, monitors: parsedMonitors, wifiSpeed, audioType, battery, isCharging } 
-    });
+    dispatch({ type: "UPDATE_SLOW_STATS", data: { wifiSpeed, audioType, battery, isCharging } });
   } catch (e) {
     dispatch({ type: "ERROR", error: e.toString() });
   }
 };
 
 export const command = dispatch => {
-  if (window.statBarClock) clearInterval(window.statBarClock);
-  window.statBarClock = setInterval(() => {
-    dispatch({ type: "TICK" });
-    run(CMD).then(output => handleOutput(output, dispatch));
-  }, 2000);
+  if (window.statBarFastClock) clearInterval(window.statBarFastClock);
+  if (window.statBarSlowClock) clearInterval(window.statBarSlowClock);
+  
+  // Fast loop: Workspaces and Windows (Instant response ~300ms, extremely lightweight)
+  window.statBarFastClock = setInterval(() => {
+    run(FAST_CMD).then(output => handleFastOutput(output, dispatch));
+  }, 300);
 
-  run(CMD).then(output => handleOutput(output, dispatch));
+  // Slow loop: Battery, Wi-Fi, Audio (runs every 5 seconds)
+  window.statBarSlowClock = setInterval(() => {
+    dispatch({ type: "TICK" });
+    run(SLOW_CMD).then(output => handleSlowOutput(output, dispatch));
+  }, 5000);
+
+  run(FAST_CMD).then(output => handleFastOutput(output, dispatch));
+  run(SLOW_CMD).then(output => handleSlowOutput(output, dispatch));
 };
 
 export const className = {
@@ -200,11 +215,22 @@ export const updateState = (event, previousState) => {
     return { ...previousState, tick: Date.now() };
   }
 
-  if (event.type === "UPDATE_STATS") {
+  if (event.type === "UPDATE_FAST_STATS") {
     const newState = {
       ...previousState,
       workspace: event.data.workspace,
       monitors: event.data.monitors,
+      warning: false
+    };
+    if (typeof window !== "undefined") {
+      try { window.localStorage.setItem("sidebarState", JSON.stringify(newState)); } catch (e) {}
+    }
+    return newState;
+  }
+  
+  if (event.type === "UPDATE_SLOW_STATS") {
+    const newState = {
+      ...previousState,
       wifiSpeed: event.data.wifiSpeed,
       audioType: event.data.audioType,
       battery: event.data.battery,
@@ -212,9 +238,7 @@ export const updateState = (event, previousState) => {
       warning: false
     };
     if (typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem("sidebarState", JSON.stringify(newState));
-      } catch (e) {}
+      try { window.localStorage.setItem("sidebarState", JSON.stringify(newState)); } catch (e) {}
     }
     return newState;
   }
