@@ -103,7 +103,7 @@ const handleSlowOutput = (output, dispatch) => {
 
     const battMatch = batteryRaw.match(/(\d+)%/);
     const battery = battMatch ? battMatch[1] : "?";
-    const isCharging = /AC Power|charging/i.test(batteryRaw);
+    const isCharging = /AC Power|\bcharging\b/i.test(batteryRaw);
 
     dispatch({ type: "UPDATE_SLOW_STATS", data: { wifiSpeed, audioType, battery, isCharging } });
   } catch (e) {
