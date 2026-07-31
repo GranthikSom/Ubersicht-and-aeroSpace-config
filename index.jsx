@@ -51,8 +51,12 @@ const handleFastOutput = (output, dispatch) => {
       name: mon,
       apps: Object.keys(appsByMonitor[mon]).map(appName => ({
         name: appName,
-        workspaces: Array.from(appsByMonitor[mon][appName]).sort()
-      }))
+        workspaces: Array.from(appsByMonitor[mon][appName]).sort((a, b) => parseInt(a) - parseInt(b))
+      })).sort((a, b) => {
+        const wsA = parseInt(a.workspaces[0]) || 0;
+        const wsB = parseInt(b.workspaces[0]) || 0;
+        return wsA - wsB;
+      })
     }));
 
     parsedMonitors.forEach(mon => {
